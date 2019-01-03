@@ -8,5 +8,7 @@ edition = "2018"
 proc-macro = true
 
 [dependencies]
-# syn = "0.15"
-quote = "0.6"
+gettext-utils = { path = "gettext-utils" }
+
+[workspace]
+members = ["gettext-utils"]

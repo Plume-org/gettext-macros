@@ -1,8 +1,8 @@
-#![feature(proc_macro_hygiene, proc_macro_quote, proc_macro_span)]
+#![feature(proc_macro_hygiene, proc_macro_quote, proc_macro_span, uniform_paths)]
 
 extern crate proc_macro;
 
-use std::{env, io::{BufRead, Write}, fs::{create_dir_all, read, write, File, OpenOptions}, iter::FromIterator, path::Path};
+use std::{env, io::{BufRead, Write}, fs::{create_dir_all, read, write, File, OpenOptions}, iter::FromIterator, path::{Path, PathBuf}};
 use proc_macro::{Delimiter, Group, Literal, Spacing, Punct, TokenStream, TokenTree, quote};
 
 fn is(t: &TokenTree, ch: char) -> bool {
@@ -37,8 +37,9 @@ pub fn i18n(input: TokenStream) -> TokenStream {
     for _ in 0..(catalog.len() + 1) { input.next(); }
     let message = input.next().unwrap();
 
-    let plural = match input.next().clone() {
+    let plural = match input.clone().next() {
         Some(t) => if is(&t, ',') {
+            input.next();
             input.next()
         } else {
             None
@@ -47,13 +48,31 @@ pub fn i18n(input: TokenStream) -> TokenStream {
     };
 
     let mut format_args = vec![];
+    println!("{}, input is {:?}", message.to_string(), input.clone().collect::<Vec<_>>());
     if let Some(TokenTree::Punct(p)) = input.next().clone() {
         if p.as_char() == ';' {
             loop {
-                format_args.push(TokenStream::from_iter(input.clone().take_while(|t| !is(t, ','))));
-                if input.next().is_none() {
+                println!("looking for fa, {:?}", input.clone().collect::<Vec<_>>());
+                let mut tokens = vec![];
+                loop {
+                    if let Some(t) = input.next().clone() {
+                        if !is(&t, ',') {
+                            println!("found tok");
+                            tokens.push(t);
+                        } else {
+                            println!("next");
+                            break;
+                        }
+                    } else {
+                        println!("end");
+                        break;
+                    }
+                }
+                if tokens.is_empty() {
+                    println!("tokens is empty");
                     break;
                 }
+                format_args.push(TokenStream::from_iter(tokens.into_iter()));
             }
         }
     }
@@ -65,9 +84,8 @@ pub fn i18n(input: TokenStream) -> TokenStream {
 msgid {}
 msgid_plural {}
 msgstr ""
-"#, file.to_str().unwrap(), line, message, pl).into_bytes());
-    
-        let count = format_args.into_iter().next().expect("Item count should be specified").clone();
+"#, file.to_str().unwrap(), line, message, pl).into_bytes()).expect("Couldn't write message to .pot (plural)");
+        let count = format_args.clone().into_iter().next().expect("Item count should be specified").clone();
         res.extend(quote!(
             .ngettext($message, $pl, $count)
         ))
@@ -76,12 +94,29 @@ msgstr ""
 # {}:{}
 msgid {}
 msgstr ""
-"#, file.to_str().unwrap(), line, message).into_bytes());
+"#, file.to_str().unwrap(), line, message).into_bytes()).expect("Couldn't write message to .pot");
 
         res.extend(quote!(
             .gettext($message)
         ))
     }
+    let mut args = vec![];
+    let mut first = true;
+    println!("found {} args: {:?}", format_args.len(), format_args);
+    for arg in format_args {
+        if first {
+            first = false;
+        } else {
+            args.push(TokenTree::Punct(Punct::new(',', Spacing::Alone)));
+        }
+        args.extend(quote!(Box::new($arg)));
+    }
+    let mut fargs = TokenStream::new();
+    fargs.extend(args);
+    let res = quote!({
+        ::gettext_utils::try_format($res, &[$fargs]).expect("Error while formatting message")
+    });
+    println!("emit {}", res);
     res
 }
 
@@ -153,7 +188,8 @@ pub fn configure_i18n(input: TokenStream) -> TokenStream {
     }
 
     // write base .pot
-    let mut pot = OpenOptions::new().write(true).truncate(true).open(path + ".pot").expect("Couldn't open .pot file");
+    create_dir_all(PathBuf::from(path.clone()).parent().unwrap()).expect("Couldn't create po dir");
+    let mut pot = OpenOptions::new().write(true).create(true).truncate(true).open(path + ".pot").expect("Couldn't open .pot file");
     pot.write_all(&format!(r#"msgid ""
 msgstr ""
 "Project-Id-Version: {}\n"
@@ -167,7 +203,7 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=INTEGER; plural=EXPRESSION;\n"
-"#, domain).into_bytes());
+"#, domain).into_bytes()).expect("Couldn't init .pot file");
     quote!({})
 }
 
@@ -182,7 +218,7 @@ pub fn init_i18n(input: TokenStream) -> TokenStream {
     write(
         out_dir.join("domain_paths"),
         String::from_utf8(read(out_dir.join("domain_paths")).unwrap_or_default()).unwrap() + &format!("{}\n{}\n", domain, code_dir.to_str().unwrap())
-    );
+    ).expect("Couldn't update domain paths");
     let out = out_dir.join(domain.to_string().replace("\"", ""));
     let meta = read(out).expect("Couldn't read metadata file");
     let mut lines = meta.lines();
@@ -198,7 +234,7 @@ pub fn init_i18n(input: TokenStream) -> TokenStream {
         TokenStream::from_iter(langs.into_iter().map(|l| vec![l, TokenTree::Punct(Punct::new(',', Spacing::Alone))]).flatten()),
     ));
     quote!(
-        mod __i18n {
+        pub mod __i18n {
             pub static DOMAIN: &'static str = $domain_tok;
 
             pub static PO_DIR: &'static str = $dir;
@@ -209,16 +245,3 @@ pub fn init_i18n(input: TokenStream) -> TokenStream {
         }
     )
 }
-
-/*
-fn parse_format_args()
-
-#[proc_macro]
-pub fn configure_i18n(input)
-
-////////
-
-fn build() {
-    configure_i18n!("foo", "po/foo");
-    configure_i18n!("bar"); // default to "po"
-}*/

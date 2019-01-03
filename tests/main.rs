@@ -1,4 +1,4 @@
-#![feature(proc_macro_hygiene, decl_macro)]
+#![feature(proc_macro_hygiene, decl_macro, uniform_paths)]
 
 use gettext_macros::*;
 
@@ -21,10 +21,13 @@ fn build() {
 
 init_i18n!("test");
 
+pub mod i18n {}
+
 #[test]
 fn main() {
     let cat = Catalog;
     let x = i18n!(cat, "Hello");
     let b = i18n!(cat, "Singular", "Plural"; 0);
     println!("{} {}", x, b);
+    println!("{}", i18n!(cat, "Woohoo, it {}"; "works"));
 }

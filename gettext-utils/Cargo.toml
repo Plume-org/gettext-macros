@@ -1,0 +1,7 @@
+[package]
+name = "gettext-utils"
+version = "0.1.0"
+authors = ["Baptiste Gelez <baptiste@gelez.xyz>"]
+edition = "2018"
+
+[dependencies]
