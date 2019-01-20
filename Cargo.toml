@@ -2,6 +2,9 @@
 name = "gettext-macros"
 version = "0.1.0"
 authors = ["Baptiste Gelez <baptiste@gelez.xyz>"]
+description = "A few proc-macros to help internationalizing Rust applications"
+repository = "https://github.com/Plume-org/gettext-macros"
+license = "GPL-3.0"
 edition = "2018"
 
 [lib]
