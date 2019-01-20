@@ -2,32 +2,18 @@
 
 use gettext_macros::*;
 
-struct Catalog;
-
-impl Catalog {
-    pub fn gettext(&self, msg: &'static str) -> &'static str {
-        msg
-    }
-
-    pub fn ngettext(&self, msg: &'static str, _pl: &'static str, _count: i32) -> &'static str {
-        msg
-    }
-}
-
-#[allow(dead_code)]
-fn build() {
-    configure_i18n!("test", "po/test", fr, en, de);
-}
-
-init_i18n!("test");
-
-pub mod i18n {}
+init_i18n!("test", fr, en, de, ja);
 
 #[test]
 fn main() {
-    let cat = Catalog;
+    let catalogs = include_i18n!();
+    let cat = &catalogs[0];
     let x = i18n!(cat, "Hello");
     let b = i18n!(cat, "Singular", "Plural"; 0);
     println!("{} {}", x, b);
     println!("{}", i18n!(cat, "Woohoo, it {}"; "works"));
+    println!(i18n_domain!());
+
 }
+
+compile_i18n!();

@@ -9,6 +9,7 @@ proc-macro = true
 
 [dependencies]
 gettext-utils = { path = "gettext-utils" }
+gettext = "0.3"
 
 [workspace]
 members = ["gettext-utils"]
