@@ -2,13 +2,36 @@
 
 extern crate proc_macro;
 use std::{env, io::{BufRead, Write}, fs::{create_dir_all, read, File, OpenOptions}, iter::FromIterator, path::Path, process::Command};
-use proc_macro::{Literal, Spacing, Punct, TokenStream, TokenTree, quote};
+use proc_macro::{Delimiter, Literal, Spacing, Punct, TokenStream, TokenTree, quote};
 
 fn is(t: &TokenTree, ch: char) -> bool {
     match t {
         TokenTree::Punct(p) => p.as_char() == ch,
         _ => false
     }
+}
+
+fn is_empty(t: &TokenTree) -> bool {
+	match t {
+		TokenTree::Literal(lit) => format!("{}", lit).len() == 2,
+		TokenTree::Group(grp) => if grp.delimiter() == Delimiter::None {
+			grp.stream().into_iter().next().map(|t| is_empty(&t)).unwrap_or(false)
+		} else {
+			false
+		},
+		_ => false,
+	}
+}
+
+fn trim(t: TokenTree) -> TokenTree {
+	match t {
+		TokenTree::Group(grp) => if grp.delimiter() == Delimiter::None {
+			grp.stream().into_iter().next().expect("Unexpected empty expression")
+		} else {
+			TokenTree::Group(grp)
+		},
+		x => x
+	}
 }
 
 #[proc_macro]
@@ -24,7 +47,11 @@ pub fn i18n(input: TokenStream) -> TokenStream {
     let mut pot = OpenOptions::new().append(true).create(true).open(format!("po/{0}/{0}.pot", domain)).expect("Couldn't open .pot file");
 
     for _ in 0..(catalog.len() + 1) { input.next(); }
-    let message = input.next().unwrap();
+    let pot_reader = read(format!("po/{0}/{0}.pot", domain)).expect("Couldn't read .pot file");
+    let mut pot_lines = pot_reader.lines();
+    let message = trim(input.next().unwrap());
+    let msgid = format!("msgid {}", message);
+    let dont_write = is_empty(&message) || pot_lines.any(|l| l.map(|l| l == msgid).unwrap_or(false));
 
     let plural = match input.clone().next() {
         Some(t) => if is(&t, ',') {
@@ -61,24 +88,30 @@ pub fn i18n(input: TokenStream) -> TokenStream {
     }
 
     let mut res = TokenStream::from_iter(catalog);
+    let code_path = if !file.is_absolute() {
+    	format!("# {}:{}\n", file.to_str().unwrap(), line)
+    } else {
+    	String::new()
+    };
     if let Some(pl) = plural {
-        pot.write_all(&format!(r#"
-# {}:{}
-msgid {}
+        if !dont_write {
+        	pot.write_all(&format!(r#"
+{}msgid {}
 msgid_plural {}
 msgstr[0] ""
-"#, file.to_str().unwrap(), line, message, pl).into_bytes()).expect("Couldn't write message to .pot (plural)");
+"#, code_path, message, pl).into_bytes()).expect("Couldn't write message to .pot (plural)");
+		}
         let count = format_args.clone().into_iter().next().expect("Item count should be specified").clone();
         res.extend(quote!(
-            .ngettext($message, $pl, $count)
+            .ngettext($message, $pl, $count as u64)
         ))
     } else {
-        pot.write_all(&format!(r#"
-# {}:{}
-msgid {}
+    	if !dont_write {
+        	pot.write_all(&format!(r#"
+{}msgid {}
 msgstr ""
-"#, file.to_str().unwrap(), line, message).into_bytes()).expect("Couldn't write message to .pot");
-
+"#, code_path, message).into_bytes()).expect("Couldn't write message to .pot");
+		}
         res.extend(quote!(
             .gettext($message)
         ))
@@ -183,7 +216,7 @@ pub fn compile_i18n(_: TokenStream) -> TokenStream {
     let pot_path = Path::new("po").join(domain.clone()).join(format!("{}.pot", domain));
 
     for lang in locales {
-        let po_path = Path::new("po").join(format!("{}.po", lang.clone()));
+        let po_path = Path::new("po").join(domain.clone()).join(format!("{}.po", lang.clone()));
         if po_path.exists() && po_path.is_file() {
             println!("Updating {}", lang.clone());
             // Update it
@@ -217,7 +250,6 @@ pub fn compile_i18n(_: TokenStream) -> TokenStream {
         }
 
         // Generate .mo
-        let po_path = Path::new("po").join(format!("{}.po", lang.clone()));
         let mo_dir = Path::new("translations")
             .join(lang.clone())
             .join("LC_MESSAGES");
