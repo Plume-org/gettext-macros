@@ -11,7 +11,7 @@ edition = "2018"
 proc-macro = true
 
 [dependencies]
-gettext-utils = { path = "gettext-utils" }
+gettext-utils = { path = "gettext-utils", version = "0.1.0" }
 gettext = "0.3"
 
 [workspace]
