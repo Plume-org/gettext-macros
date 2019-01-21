@@ -5,7 +5,7 @@ use proc_macro::{quote, Literal, Punct, Spacing, TokenStream, TokenTree};
 use std::{
     env,
     fs::{create_dir_all, read, File, OpenOptions},
-    io::{BufRead, Write},
+    io::{BufRead, Read, Seek, SeekFrom, Write},
     iter::FromIterator,
     path::Path,
     process::Command,
@@ -43,7 +43,8 @@ pub fn i18n(input: TokenStream) -> TokenStream {
         .unwrap()
         .unwrap();
     let mut pot = OpenOptions::new()
-        .append(true)
+        .read(true)
+        .write(true)
         .create(true)
         .open(format!("po/{0}/{0}.pot", domain))
         .expect("Couldn't open .pot file");
@@ -52,6 +53,12 @@ pub fn i18n(input: TokenStream) -> TokenStream {
         input.next();
     }
     let message = input.next().unwrap();
+
+    let mut contents = String::new();
+    pot.read_to_string(&mut contents).unwrap();
+    pot.seek(SeekFrom::End(0)).unwrap();
+
+    let already_exists = contents.contains(&format!("msgid {}", message));
 
     let plural = match input.clone().next() {
         Some(t) => {
@@ -91,22 +98,24 @@ pub fn i18n(input: TokenStream) -> TokenStream {
 
     let mut res = TokenStream::from_iter(catalog);
     if let Some(pl) = plural {
-        pot.write_all(
-            &format!(
-                r#"
+        if !already_exists {
+            pot.write_all(
+                &format!(
+                    r#"
 # {}:{}
 msgid {}
 msgid_plural {}
 msgstr[0] ""
 "#,
-                file.to_str().unwrap(),
-                line,
-                message,
-                pl
+                    file.to_str().unwrap(),
+                    line,
+                    message,
+                    pl
+                )
+                .into_bytes(),
             )
-            .into_bytes(),
-        )
-        .expect("Couldn't write message to .pot (plural)");
+            .expect("Couldn't write message to .pot (plural)");
+        }
         let count = format_args
             .clone()
             .into_iter()
@@ -117,20 +126,22 @@ msgstr[0] ""
             .ngettext($message, $pl, $count)
         ))
     } else {
-        pot.write_all(
-            &format!(
-                r#"
+        if !already_exists {
+            pot.write_all(
+                &format!(
+                    r#"
 # {}:{}
 msgid {}
 msgstr ""
 "#,
-                file.to_str().unwrap(),
-                line,
-                message
+                    file.to_str().unwrap(),
+                    line,
+                    message
+                )
+                .into_bytes(),
             )
-            .into_bytes(),
-        )
-        .expect("Couldn't write message to .pot");
+            .expect("Couldn't write message to .pot");
+        }
 
         res.extend(quote!(
             .gettext($message)
