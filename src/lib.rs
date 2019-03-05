@@ -8,7 +8,7 @@ use std::{
     io::{BufRead, Read, Seek, SeekFrom, Write},
     iter::FromIterator,
     path::Path,
-    process::Command,
+    process::{Command, Stdio},
 };
 
 fn is(t: &TokenTree, ch: char) -> bool {
@@ -291,19 +291,19 @@ pub fn compile_i18n(_: TokenStream) -> TokenStream {
     let domain = lines.next().unwrap().unwrap();
     let locales = lines.map(|l| l.unwrap()).collect::<Vec<_>>();
 
-    let pot_path = Path::new("po")
+    let pot_path = root_crate_path().join("po")
         .join(domain.clone())
         .join(format!("{}.pot", domain));
 
     for lang in locales {
-        let po_path = Path::new("po").join(domain.clone()).join(format!("{}.po", lang.clone()));
+        let po_path = root_crate_path().join("po").join(domain.clone()).join(format!("{}.po", lang.clone()));
         if po_path.exists() && po_path.is_file() {
-            println!("Updating {}", lang.clone());
             // Update it
             Command::new("msgmerge")
                 .arg("-U")
                 .arg(po_path.to_str().unwrap())
                 .arg(pot_path.to_str().unwrap())
+                .stdout(Stdio::null())
                 .status()
                 .map(|s| {
                     if !s.success() {
@@ -320,6 +320,7 @@ pub fn compile_i18n(_: TokenStream) -> TokenStream {
                 .arg("-l")
                 .arg(lang.clone())
                 .arg("--no-translator")
+                .stdout(Stdio::null())
                 .status()
                 .map(|s| {
                     if !s.success() {
@@ -330,7 +331,7 @@ pub fn compile_i18n(_: TokenStream) -> TokenStream {
         }
 
         // Generate .mo
-        let mo_dir = Path::new("translations")
+        let mo_dir = root_crate_path().join("translations")
             .join(lang.clone())
             .join("LC_MESSAGES");
         create_dir_all(mo_dir.clone()).expect("Couldn't create MO directory");
@@ -339,6 +340,7 @@ pub fn compile_i18n(_: TokenStream) -> TokenStream {
         Command::new("msgfmt")
             .arg(format!("--output-file={}", mo_path.to_str().unwrap()))
             .arg(po_path)
+            .stdout(Stdio::null())
             .status()
             .map(|s| {
                 if !s.success() {
@@ -366,15 +368,17 @@ pub fn include_i18n(_: TokenStream) -> TokenStream {
     let file = read(out_dir.join(env::var("CARGO_PKG_NAME").expect("Please build with cargo")))
         .expect("Coudln't read domain, make sure to call init_i18n! before");
     let mut lines = file.lines();
-    let domain = TokenTree::Literal(Literal::string(&lines.next().unwrap().unwrap()));
+    let domain = lines.next().unwrap().unwrap();
     let locales = lines
 		.map(Result::unwrap)
 		.map(|l| {
                     let lang = TokenTree::Literal(Literal::string(&l));
+                    let path = root_crate_path().join("translations").join(l).join("LC_MESSAGES").join(format!("{}.mo", domain));
+                    let path = TokenTree::Literal(Literal::string(path.to_str().unwrap()));
                     quote!{
                         ($lang, ::gettext::Catalog::parse(
                             &include_bytes!(
-                                concat!(env!("CARGO_MANIFEST_DIR"), "/translations/", $lang, "/LC_MESSAGES/", $domain, ".mo")
+                                $path
                             )[..]
                         ).expect("Error while loading catalog")),
                     }
@@ -385,4 +389,14 @@ pub fn include_i18n(_: TokenStream) -> TokenStream {
             $locales
         ]
     })
+}
+
+fn root_crate_path() -> std::path::PathBuf {
+    let path = env::var("CARGO_MANIFEST_DIR").unwrap();
+    let path = Path::new(&path);
+    if path.parent().unwrap().join("Cargo.toml").exists() {
+        path.parent().unwrap().to_path_buf()
+    } else {
+        path.to_path_buf()
+    }
 }
