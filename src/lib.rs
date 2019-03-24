@@ -1,15 +1,15 @@
-#![feature(proc_macro_hygiene, proc_macro_quote, proc_macro_span, uniform_paths)]
+#![feature(proc_macro_hygiene, proc_macro_quote, proc_macro_span)]
 
 extern crate proc_macro;
-use proc_macro::{Delimiter, Literal, Spacing, Punct, TokenStream, TokenTree, quote};
+
+use proc_macro::{Delimiter, Literal, Punct, quote, Spacing, TokenStream, TokenTree};
 use std::{
     env,
-    fs::{create_dir_all, read, File, OpenOptions},
-    io::{BufRead, Read, Seek, SeekFrom, Write},
+    fs,
+    io::{Read, Seek, SeekFrom, Write},
     iter::FromIterator,
-    path::Path,
-    process::{Command, Stdio},
 };
+use gettext_utils as utils;
 
 fn is(t: &TokenTree, ch: char) -> bool {
     match t {
@@ -41,6 +41,28 @@ fn trim(t: TokenTree) -> TokenTree {
 	}
 }
 
+/// Translates the given string with the given catalog.
+///
+/// This macro will detect when new strings are added in the translations, and
+/// produce a warning. To include your new strings in the binary, you will need
+/// to build your crate a second time.
+///
+/// ## Example
+///
+/// Given you have the correct translations in your `.po` files:
+///
+/// ```rust,ignore
+/// let (_language, ref french_catalog) = &include_i18n!()[0];
+/// i18n!(french_catalog, "Hello!");  // "Salut !"
+/// ```
+///
+/// The `0` index in the first line means it is the language listed first in the
+/// call of `gettext_utils::compile_i18n`.
+///
+/// ## Note
+///
+/// This macro will panic if `gettext_utils::compile_i18n` hasn't been called
+/// in the build script.
 #[proc_macro]
 pub fn i18n(input: TokenStream) -> TokenStream {
     let span = input
@@ -57,19 +79,18 @@ pub fn i18n(input: TokenStream) -> TokenStream {
 
     let file = span.source_file().path();
     let line = span.start().line;
-    let out_dir = Path::new(&env::var("CARGO_TARGET_DIR").unwrap_or("target/debug".into()))
-        .join("gettext_macros");
-    let domain = read(out_dir.join(env::var("CARGO_PKG_NAME").expect("Please build with cargo")))
-        .expect("Coudln't read domain, make sure to call init_i18n! before")
-        .lines()
-        .next()
-        .unwrap()
-        .unwrap();
-    let mut pot = OpenOptions::new()
+    let domain = get_current_domain();
+    let pot = utils::pot_path(&domain);
+
+    if env::var("GETTEXT_POT_INIT").is_err() {
+        utils::init_pot(&pot, &domain).expect("Failed to create the .pot file");
+        env::set_var("GETTEXT_POT_INIT", "1");
+    }
+
+    let mut pot = fs::OpenOptions::new()
         .read(true)
         .write(true)
-        .create(true)
-        .open(format!("po/{0}/{0}.pot", domain))
+        .open(pot)
         .expect("Couldn't open .pot file");
 
     for _ in 0..(catalog.len() + 1) {
@@ -189,170 +210,24 @@ msgstr ""
     res
 }
 
-#[proc_macro]
-pub fn init_i18n(input: TokenStream) -> TokenStream {
-    let mut input = input.into_iter();
-    let domain = match input.next() {
-        Some(TokenTree::Literal(lit)) => lit.to_string().replace("\"", ""),
-        Some(_) => panic!("Domain should be a str"),
-        None => panic!("Expected a translation domain (for instance \"myapp\")"),
-    };
-    let mut langs = vec![];
-    if let Some(t) = input.next() {
-        if is(&t, ',') {
-            match input.next() {
-                Some(TokenTree::Ident(i)) => {
-                    langs.push(i);
-                    loop {
-                        let next = input.next();
-                        if next.is_none() || !is(&next.unwrap(), ',') {
-                            break;
-                        }
-                        match input.next() {
-                            Some(TokenTree::Ident(i)) => {
-                                langs.push(i);
-                            }
-                            _ => panic!("Expected a language identifier"),
-                        }
-                    }
-                }
-                _ => panic!("Expected a language identifier"),
-            }
-        } else {
-            panic!("Expected  `,`")
-        }
-    }
-
-    // emit file to include
-    let out_dir = Path::new(&env::var("CARGO_TARGET_DIR").unwrap_or("target/debug".into()))
-        .join("gettext_macros");
-    let out = out_dir.join(env::var("CARGO_PKG_NAME").expect("Please build with cargo"));
-    create_dir_all(out_dir).expect("Couldn't create output dir");
-    let mut out = File::create(out).expect("Metadata file couldn't be open");
-    writeln!(out, "{}", domain).expect("Couldn't write domain");
-    for l in langs {
-        writeln!(out, "{}", l).expect("Couldn't write lang");
-    }
-
-    // write base .pot
-    create_dir_all(format!("po/{}", domain)).expect("Couldn't create po dir");
-    let mut pot = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(format!("po/{0}/{0}.pot", domain))
-        .expect("Couldn't open .pot file");
-    pot.write_all(
-        &format!(
-            r#"msgid ""
-msgstr ""
-"Project-Id-Version: {}\n"
-"Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2018-06-15 16:33-0700\n"
-"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
-"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
-"Language-Team: LANGUAGE <LL@li.org>\n"
-"Language: \n"
-"MIME-Version: 1.0\n"
-"Content-Type: text/plain; charset=UTF-8\n"
-"Content-Transfer-Encoding: 8bit\n"
-"Plural-Forms: nplurals=INTEGER; plural=EXPRESSION;\n"
-"#,
-            domain
-        )
-        .into_bytes(),
-    )
-    .expect("Couldn't init .pot file");
-
-    quote!()
-}
-
+/// Gets the domain set in `gettext::compile_i18n`.
+///
+/// You can also use `env!("GETTEXT_MACROS_DOMAIN")`.
+///
+/// ## Note
+///
+/// This macro will panic if `gettext_utils::compile_i18n` hasn't been called
+/// in the build script.
 #[proc_macro]
 pub fn i18n_domain(_: TokenStream) -> TokenStream {
-    let out_dir = Path::new(&env::var("CARGO_TARGET_DIR").unwrap_or("target/debug".into()))
-        .join("gettext_macros");
-    let domain = read(out_dir.join(env::var("CARGO_PKG_NAME").expect("Please build with cargo")))
-        .expect("Coudln't read domain, make sure to call init_i18n! before")
-        .lines()
-        .next()
-        .unwrap()
-        .unwrap();
+    let domain = get_current_domain();
     let tok = TokenTree::Literal(Literal::string(&domain));
     quote!($tok)
 }
 
-#[proc_macro]
-pub fn compile_i18n(_: TokenStream) -> TokenStream {
-    let out_dir = Path::new(&env::var("CARGO_TARGET_DIR").unwrap_or("target/debug".into()))
-        .join("gettext_macros");
-    let file = read(out_dir.join(env::var("CARGO_PKG_NAME").expect("Please build with cargo")))
-        .expect("Coudln't read domain, make sure to call init_i18n! before");
-    let mut lines = file.lines();
-    let domain = lines.next().unwrap().unwrap();
-    let locales = lines.map(|l| l.unwrap()).collect::<Vec<_>>();
-
-    let pot_path = root_crate_path().join("po")
-        .join(domain.clone())
-        .join(format!("{}.pot", domain));
-
-    for lang in locales {
-        let po_path = root_crate_path().join("po").join(domain.clone()).join(format!("{}.po", lang.clone()));
-        if po_path.exists() && po_path.is_file() {
-            // Update it
-            Command::new("msgmerge")
-                .arg("-U")
-                .arg(po_path.to_str().unwrap())
-                .arg(pot_path.to_str().unwrap())
-                .stdout(Stdio::null())
-                .status()
-                .map(|s| {
-                    if !s.success() {
-                        panic!("Couldn't update PO file")
-                    }
-                })
-                .expect("Couldn't update PO file");
-        } else {
-            println!("Creating {}", lang.clone());
-            // Create it from the template
-            Command::new("msginit")
-                .arg(format!("--input={}", pot_path.to_str().unwrap()))
-                .arg(format!("--output-file={}", po_path.to_str().unwrap()))
-                .arg("-l")
-                .arg(lang.clone())
-                .arg("--no-translator")
-                .stdout(Stdio::null())
-                .status()
-                .map(|s| {
-                    if !s.success() {
-                        panic!("Couldn't init PO file (gettext returned an error)")
-                    }
-                })
-                .expect("Couldn't init PO file");
-        }
-
-        // Generate .mo
-        let mo_dir = root_crate_path().join("translations")
-            .join(lang.clone())
-            .join("LC_MESSAGES");
-        create_dir_all(mo_dir.clone()).expect("Couldn't create MO directory");
-        let mo_path = mo_dir.join(format!("{}.mo", domain));
-
-        Command::new("msgfmt")
-            .arg(format!("--output-file={}", mo_path.to_str().unwrap()))
-            .arg(po_path)
-            .stdout(Stdio::null())
-            .status()
-            .map(|s| {
-                if !s.success() {
-                    panic!("Couldn't compile translations (gettext returned an error)")
-                }
-            })
-            .expect("Couldn't compile translations");
-    }
-    quote!()
-}
-
 /// Use this macro to staticaly import translations into your final binary.
+///
+/// ## Example
 ///
 /// ```rust,ignore
 /// # //ignore because there is no translation file provided with rocket_i18n
@@ -361,28 +236,25 @@ pub fn compile_i18n(_: TokenStream) -> TokenStream {
 /// # use rocket_i18n::Translations;
 /// let tr: Translations = include_i18n!();
 /// ```
+///
+/// ## Note
+///
+/// This macro will panic if `gettext_utils::compile_i18n` hasn't been called
+/// in the build script.
 #[proc_macro]
 pub fn include_i18n(_: TokenStream) -> TokenStream {
-    let out_dir = Path::new(&env::var("CARGO_TARGET_DIR").unwrap_or("target/debug".into()))
-        .join("gettext_macros");
-    let file = read(out_dir.join(env::var("CARGO_PKG_NAME").expect("Please build with cargo")))
-        .expect("Coudln't read domain, make sure to call init_i18n! before");
-    let mut lines = file.lines();
-    let domain = lines.next().unwrap().unwrap();
-    let locales = lines
-		.map(Result::unwrap)
-		.map(|l| {
-                    let lang = TokenTree::Literal(Literal::string(&l));
-                    let path = root_crate_path().join("translations").join(l).join("LC_MESSAGES").join(format!("{}.mo", domain));
-                    let path = TokenTree::Literal(Literal::string(path.to_str().unwrap()));
-                    quote!{
-                        ($lang, ::gettext::Catalog::parse(
-                            &include_bytes!(
-                                $path
-                            )[..]
-                        ).expect("Error while loading catalog")),
-                    }
-		}).collect::<TokenStream>();
+    let domain = get_current_domain();
+    let file = fs::read_to_string(utils::domain_path(&domain)).unwrap();
+    let locales = file.lines()
+        .map(|l| {
+            let mo_bytes = utils::compile_domain_lang(&domain, l);
+            let lang = TokenTree::Literal(Literal::string(&l));
+            let mo_bytes = TokenTree::Literal(Literal::byte_string(&mo_bytes));
+            quote! {
+                ($lang, ::gettext::Catalog::parse(&$mo_bytes[..])
+                    .expect("Error while loading catalog")),
+            }
+        }).collect::<TokenStream>();
 
     quote!({
         vec![
@@ -391,12 +263,7 @@ pub fn include_i18n(_: TokenStream) -> TokenStream {
     })
 }
 
-fn root_crate_path() -> std::path::PathBuf {
-    let path = env::var("CARGO_MANIFEST_DIR").unwrap();
-    let path = Path::new(&path);
-    if path.parent().unwrap().join("Cargo.toml").exists() {
-        path.parent().unwrap().to_path_buf()
-    } else {
-        path.to_path_buf()
-    }
+fn get_current_domain() -> String {
+    env::var("GETTEXT_MACROS_DOMAIN")
+        .expect("You need to call gettext_utils::compile_i18n in build.rs")
 }
