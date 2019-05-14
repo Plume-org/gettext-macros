@@ -1,9 +1,0 @@
-[package]
-name = "gettext-utils"
-version = "0.1.0"
-authors = ["Baptiste Gelez <baptiste@gelez.xyz>"]
-description = "Utility crate for gettext-macros"
-license = "GPL-3.0"
-edition = "2018"
-
-[dependencies]
