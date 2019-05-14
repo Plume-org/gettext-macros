@@ -63,8 +63,8 @@ pub fn i18n(input: TokenStream) -> TokenStream {
         .expect("Coudln't read domain, make sure to call init_i18n! before")
         .lines()
         .next()
-        .unwrap()
-        .unwrap();
+        .expect("Invalid config file. Make sure to call init_i18n! before this macro")
+        .expect("IO error while reading config");
     let mut pot = OpenOptions::new()
         .read(true)
         .write(true)
@@ -75,11 +75,11 @@ pub fn i18n(input: TokenStream) -> TokenStream {
     for _ in 0..(catalog.len() + 1) {
         input.next();
     }
-    let message = trim(input.next().unwrap());
+    let message = trim(input.next().expect("Expected a message to translate"));
 
     let mut contents = String::new();
-    pot.read_to_string(&mut contents).unwrap();
-    pot.seek(SeekFrom::End(0)).unwrap();
+    pot.read_to_string(&mut contents).expect("IO error while reading .pot file");
+    pot.seek(SeekFrom::End(0)).expect("IO error while seeking .pot file to end");
 
     let already_exists = is_empty(&message) || contents.contains(&format!("msgid {}", message));
 
@@ -120,10 +120,9 @@ pub fn i18n(input: TokenStream) -> TokenStream {
     }
 
     let mut res = TokenStream::from_iter(catalog);
-    let code_path = if !file.is_absolute() {
-    	format!("# {}:{}\n", file.to_str().unwrap(), line)
-    } else {
-    	String::new()
+    let code_path = match file.to_str() {
+        Some(path) if !file.is_absolute() => format!("# {}:{}\n", path, line),
+        _ => String::new(),
     };
     if let Some(pl) = plural {
         if !already_exists {
@@ -206,7 +205,7 @@ pub fn init_i18n(input: TokenStream) -> TokenStream {
                     langs.push(i);
                     loop {
                         let next = input.next();
-                        if next.is_none() || !is(&next.unwrap(), ',') {
+                        if next.is_none() || !is(&next.expect("Unreachable: next should be Some"), ',') {
                             break;
                         }
                         match input.next() {
@@ -276,8 +275,8 @@ pub fn i18n_domain(_: TokenStream) -> TokenStream {
         .expect("Coudln't read domain, make sure to call init_i18n! before")
         .lines()
         .next()
-        .unwrap()
-        .unwrap();
+        .expect("Invalid config file. Make sure to call init_i18n! before this macro")
+        .expect("IO error while reading config");
     let tok = TokenTree::Literal(Literal::string(&domain));
     quote!($tok)
 }
@@ -289,8 +288,10 @@ pub fn compile_i18n(_: TokenStream) -> TokenStream {
     let file = read(out_dir.join(env::var("CARGO_PKG_NAME").expect("Please build with cargo")))
         .expect("Coudln't read domain, make sure to call init_i18n! before");
     let mut lines = file.lines();
-    let domain = lines.next().unwrap().unwrap();
-    let locales = lines.map(|l| l.unwrap()).collect::<Vec<_>>();
+    let domain = lines.next()
+        .expect("Invalid config file. Make sure to call init_i18n! before this macro")
+        .expect("IO error while reading config");
+    let locales = lines.map(|l| l.expect("IO error while reading locales from config")).collect::<Vec<_>>();
 
     let pot_path = root_crate_path().join("po")
         .join(domain.clone())
@@ -302,8 +303,8 @@ pub fn compile_i18n(_: TokenStream) -> TokenStream {
             // Update it
             Command::new("msgmerge")
                 .arg("-U")
-                .arg(po_path.to_str().unwrap())
-                .arg(pot_path.to_str().unwrap())
+                .arg(po_path.to_str().expect("msgmerge: PO path error"))
+                .arg(pot_path.to_str().expect("msgmerge: POT path error"))
                 .stdout(Stdio::null())
                 .status()
                 .map(|s| {
@@ -311,13 +312,13 @@ pub fn compile_i18n(_: TokenStream) -> TokenStream {
                         panic!("Couldn't update PO file")
                     }
                 })
-                .expect("Couldn't update PO file");
+                .expect("Couldn't update PO file. Make sure msgmerge is installed.");
         } else {
             println!("Creating {}", lang.clone());
             // Create it from the template
             Command::new("msginit")
-                .arg(format!("--input={}", pot_path.to_str().unwrap()))
-                .arg(format!("--output-file={}", po_path.to_str().unwrap()))
+                .arg(format!("--input={}", pot_path.to_str().expect("msginit: POT path error")))
+                .arg(format!("--output-file={}", po_path.to_str().expect("msginit: PO path error")))
                 .arg("-l")
                 .arg(lang.clone())
                 .arg("--no-translator")
@@ -328,7 +329,7 @@ pub fn compile_i18n(_: TokenStream) -> TokenStream {
                         panic!("Couldn't init PO file (gettext returned an error)")
                     }
                 })
-                .expect("Couldn't init PO file");
+                .expect("Couldn't init PO file. Make sure msginit is installed.");
         }
 
         // Generate .mo
@@ -339,7 +340,7 @@ pub fn compile_i18n(_: TokenStream) -> TokenStream {
         let mo_path = mo_dir.join(format!("{}.mo", domain));
 
         Command::new("msgfmt")
-            .arg(format!("--output-file={}", mo_path.to_str().unwrap()))
+            .arg(format!("--output-file={}", mo_path.to_str().expect("msgfmt: MO path error")))
             .arg(po_path)
             .stdout(Stdio::null())
             .status()
@@ -348,7 +349,7 @@ pub fn compile_i18n(_: TokenStream) -> TokenStream {
                     panic!("Couldn't compile translations (gettext returned an error)")
                 }
             })
-            .expect("Couldn't compile translations");
+            .expect("Couldn't compile translations. Make sure msgfmt is installed");
     }
     quote!()
 }
@@ -369,20 +370,22 @@ pub fn include_i18n(_: TokenStream) -> TokenStream {
     let file = read(out_dir.join(env::var("CARGO_PKG_NAME").expect("Please build with cargo")))
         .expect("Coudln't read domain, make sure to call init_i18n! before");
     let mut lines = file.lines();
-    let domain = lines.next().unwrap().unwrap();
+    let domain = lines.next()
+        .expect("Invalid config file. Make sure to call init_i18n! before this macro")
+        .expect("IO error while reading config");
     let locales = lines
-		.map(Result::unwrap)
+		.map(|l| l.expect("IO error while reading locales from config"))
 		.map(|l| {
-                    let lang = TokenTree::Literal(Literal::string(&l));
-                    let path = root_crate_path().join("translations").join(l).join("LC_MESSAGES").join(format!("{}.mo", domain));
-                    let path = TokenTree::Literal(Literal::string(path.to_str().unwrap()));
-                    quote!{
-                        ($lang, ::gettext::Catalog::parse(
-                            &include_bytes!(
-                                $path
-                            )[..]
-                        ).expect("Error while loading catalog")),
-                    }
+            let lang = TokenTree::Literal(Literal::string(&l));
+            let path = root_crate_path().join("translations").join(l).join("LC_MESSAGES").join(format!("{}.mo", domain));
+            let path = TokenTree::Literal(Literal::string(path.to_str().expect("Couldn't write MO file path")));
+            quote!{
+                ($lang, ::gettext::Catalog::parse(
+                    &include_bytes!(
+                        $path
+                    )[..]
+                ).expect("Error while loading catalog")),
+            }
 		}).collect::<TokenStream>();
 
     quote!({
@@ -393,10 +396,10 @@ pub fn include_i18n(_: TokenStream) -> TokenStream {
 }
 
 fn root_crate_path() -> std::path::PathBuf {
-    let path = env::var("CARGO_MANIFEST_DIR").unwrap();
+    let path = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is not set. Please use cargo to compile your crate.");
     let path = Path::new(&path);
-    if path.parent().unwrap().join("Cargo.toml").exists() {
-        path.parent().unwrap().to_path_buf()
+    if path.parent().expect("No parent dir").join("Cargo.toml").exists() {
+        path.parent().expect("No parent dir").to_path_buf()
     } else {
         path.to_path_buf()
     }
