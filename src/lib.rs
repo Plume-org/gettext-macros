@@ -184,7 +184,8 @@ msgstr ""
     let mut fargs = TokenStream::new();
     fargs.extend(args);
     let res = quote!({
-        ::gettext_utils::try_format($res, &[$fargs]).expect("Error while formatting message")
+        use runtime_fmt::*;
+        rt_format!($res, $fargs).expect("Error while formatting message")
     });
     res
 }
