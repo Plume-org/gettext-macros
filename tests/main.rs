@@ -10,6 +10,9 @@ fn main() {
     let cat = &catalogs[0].1;
     let x = i18n!(cat, "Hello");
     let b = i18n!(cat, "Singular", "Plural"; 0);
+    i18n!(cat, context = "Test context", "Hello");
+	i18n!(cat, context = "Test context (plural)", "Hello", "Plural"; 2);
+	i18n!(cat, context = "Test context (format)", "Hello {}"; "world");
     println!("{} {}", x, b);
     println!("{}", i18n!(cat, "Woohoo, it {}"; "works"));
     println!(i18n_domain!());

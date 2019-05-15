@@ -1,7 +1,7 @@
 #![feature(proc_macro_hygiene, proc_macro_quote, proc_macro_span, uniform_paths)]
 
 extern crate proc_macro;
-use proc_macro::{Delimiter, Literal, Spacing, Punct, TokenStream, TokenTree, quote};
+use proc_macro::{Delimiter, Literal, Spacing, Punct, TokenStream, TokenTree, quote, token_stream::IntoIter as TokenIter};
 use std::{
     env,
     fs::{create_dir_all, read, File, OpenOptions},
@@ -41,6 +41,19 @@ fn trim(t: TokenTree) -> TokenTree {
 	}
 }
 
+fn named_arg(mut input: TokenIter, name: &'static str) -> Option<TokenStream> {
+    input.next().and_then(|t| match t {
+        TokenTree::Ident(ref i) if i.to_string() == name => {
+            input.next(); // skip "="
+            Some(input.take_while(|tok| match tok {
+                TokenTree::Punct(_) => false,
+                _ => true,
+            }).collect())
+        },
+        _ => None,
+    })
+}
+
 #[proc_macro]
 pub fn i18n(input: TokenStream) -> TokenStream {
     let span = input
@@ -75,13 +88,19 @@ pub fn i18n(input: TokenStream) -> TokenStream {
     for _ in 0..(catalog.len() + 1) {
         input.next();
     }
+    let context = named_arg(input.clone(), "context");
+    if let Some(c) = context.clone() {
+        for _ in 0..(c.into_iter().count() + 3) {
+            input.next();
+        }
+    }
     let message = trim(input.next().expect("Expected a message to translate"));
 
     let mut contents = String::new();
     pot.read_to_string(&mut contents).expect("IO error while reading .pot file");
     pot.seek(SeekFrom::End(0)).expect("IO error while seeking .pot file to end");
 
-    let already_exists = is_empty(&message) || contents.contains(&format!("msgid {}", message));
+    let already_exists = is_empty(&message) || contents.contains(&format!("{}msgid {}", context.clone().map(|c| format!("msgctxt {}\n", c)).unwrap_or_default(), message));
 
     let plural = match input.clone().next() {
         Some(t) => {
@@ -121,8 +140,13 @@ pub fn i18n(input: TokenStream) -> TokenStream {
 
     let mut res = TokenStream::from_iter(catalog);
     let code_path = match file.to_str() {
-        Some(path) if !file.is_absolute() => format!("# {}:{}\n", path, line),
+        Some(path) if !file.is_absolute() => format!("#: {}:{}\n", path, line),
         _ => String::new(),
+    };
+    let prefix = if let Some(c) = context.clone() {
+        format!("{}msgctxt {}\n", code_path, c)
+    } else {
+        code_path
     };
     if let Some(pl) = plural {
         if !already_exists {
@@ -133,7 +157,7 @@ pub fn i18n(input: TokenStream) -> TokenStream {
 msgid_plural {}
 msgstr[0] ""
 "#,
-                    code_path,
+                    prefix,
                     message,
                     pl
                 )
@@ -147,9 +171,15 @@ msgstr[0] ""
             .next()
             .expect("Item count should be specified")
             .clone();
-        res.extend(quote!(
-            .ngettext($message, $pl, $count as u64)
-        ))
+        if let Some(c) = context {
+            res.extend(quote!(
+                .npgettext($c, $message, $pl, $count as u64)
+            ))
+        } else {
+            res.extend(quote!(
+                .ngettext($message, $pl, $count as u64)
+            ))
+        }
     } else {
         if !already_exists {
             pot.write_all(
@@ -158,17 +188,22 @@ msgstr[0] ""
 {}msgid {}
 msgstr ""
 "#,
-                    code_path,
+                    prefix,
                     message
                 )
                 .into_bytes(),
             )
             .expect("Couldn't write message to .pot");
         }
-
-        res.extend(quote!(
-            .gettext($message)
-        ))
+        if let Some(c) = context {
+            res.extend(quote!(
+                .pgettext($c, $message)
+            ))
+        } else {
+            res.extend(quote!(
+                .gettext($message)
+            ))
+        }
     }
     let mut args = vec![];
     let mut first = true;
