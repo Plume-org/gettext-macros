@@ -427,9 +427,9 @@ pub fn compile_i18n(_: TokenStream) -> TokenStream {
             }
 
             // Generate .mo
-            let mo_dir = root_crate_path().join("translations")
-                .join(lang.clone())
-                .join("LC_MESSAGES");
+            let mo_dir = Path::new(&env::var("CARGO_TARGET_DIR")
+                .unwrap_or_else(|_| root_crate_path().join("target").join("debug").to_str().expect("Couldn't compute mo output dir").into())
+            ).join("gettext_macros").join(lang);
             create_dir_all(mo_dir.clone()).expect("Couldn't create MO directory");
             let mo_path = mo_dir.join(format!("{}.mo", domain));
 
@@ -482,7 +482,9 @@ pub fn include_i18n(_: TokenStream) -> TokenStream {
 		.map(|l| l.expect("IO error while reading locales from config"))
 		.map(|l| {
             let lang = TokenTree::Literal(Literal::string(&l));
-            let path = root_crate_path().join("translations").join(l).join("LC_MESSAGES").join(format!("{}.mo", domain));
+            let path = Path::new(&env::var("CARGO_TARGET_DIR")
+                .unwrap_or_else(|_| root_crate_path().join("target").join("debug").to_str().expect("Couldn't compute mo output dir").into())
+            ).join("gettext_macros").join(l).join(format!("{}.mo", domain));
 
             if !path.exists() {
                 panic!("{} doesn't exist. Make sure to call compile_i18n! before include_i18n!, and check that you didn't disabled mo compilation.", path.display());
