@@ -72,12 +72,23 @@ pub fn i18n(input: TokenStream) -> TokenStream {
     let line = span.start().line;
     let out_dir = Path::new(&env::var("CARGO_TARGET_DIR").unwrap_or("target/debug".into()))
         .join("gettext_macros");
-    let domain = read(out_dir.join(env::var("CARGO_PKG_NAME").expect("Please build with cargo")))
-        .expect("Coudln't read domain, make sure to call init_i18n! before")
-        .lines()
-        .next()
+    let config = read(out_dir.join(env::var("CARGO_PKG_NAME").expect("Please build with cargo")))
+        .expect("Coudln't read domain, make sure to call init_i18n! before");
+    let mut lines = config.lines();
+    let domain = lines.next()
         .expect("Invalid config file. Make sure to call init_i18n! before this macro")
         .expect("IO error while reading config");
+    lines.next()
+        .expect("Invalid config file. Make sure to call init_i18n! before this macro")
+        .expect("IO error while reading config");
+    lines.next()
+        .expect("Invalid config file. Make sure to call init_i18n! before this macro")
+        .expect("IO error while reading config");
+    let write_loc: bool = lines.next()
+        .expect("Invalid config file. Make sure to call init_i18n! before this macro")
+        .expect("IO error while reading config")
+        .parse().expect("Couldn't parse bool");
+
     let mut pot = OpenOptions::new()
         .read(true)
         .write(true)
@@ -140,7 +151,7 @@ pub fn i18n(input: TokenStream) -> TokenStream {
 
     let mut res = TokenStream::from_iter(catalog);
     let code_path = match file.to_str() {
-        Some(path) if !file.is_absolute() => format!("#: {}:{}\n", path, line),
+        Some(path) if write_loc && !file.is_absolute() => format!("#: {}:{}\n", path, line),
         _ => String::new(),
     };
     let prefix = if let Some(c) = context.clone() {
@@ -232,30 +243,57 @@ pub fn init_i18n(input: TokenStream) -> TokenStream {
         Some(_) => panic!("Domain should be a str"),
         None => panic!("Expected a translation domain (for instance \"myapp\")"),
     };
-    let mut langs = vec![];
-    if let Some(t) = input.next() {
-        if is(&t, ',') {
-            match input.next() {
-                Some(TokenTree::Ident(i)) => {
-                    langs.push(i);
-                    loop {
-                        let next = input.next();
-                        if next.is_none() || !is(&next.expect("Unreachable: next should be Some"), ',') {
-                            break;
-                        }
-                        match input.next() {
-                            Some(TokenTree::Ident(i)) => {
-                                langs.push(i);
-                            }
-                            _ => panic!("Expected a language identifier"),
-                        }
-                    }
+
+    let (po, mo, location) = if let Some(n) = input.next() {
+        if is(&n, ',') {
+            let po = named_arg(input.clone(), "po");
+            if let Some(po) = po.clone() {
+                for _ in 0..(po.into_iter().count() + 3) {
+                    input.next();
                 }
-                _ => panic!("Expected a language identifier"),
             }
+
+            let mo = named_arg(input.clone(), "mo");
+            if let Some(mo) = mo.clone() {
+                for _ in 0..(mo.into_iter().count() + 3) {
+                    input.next();
+                }
+            }
+
+            let location = named_arg(input.clone(), "location");
+            if let Some(location) = location.clone() {
+                for _ in 0..(location.into_iter().count() + 3) {
+                    input.next();
+                }
+            }
+
+            (po, mo, location)
         } else {
-            panic!("Expected  `,`")
+            (None, None, None)
         }
+    } else {
+        (None, None, None)
+    };
+
+    let mut langs = vec![];
+    match input.next() {
+        Some(TokenTree::Ident(i)) => {
+            langs.push(i);
+            loop {
+                let next = input.next();
+                if next.is_none() || !is(&next.expect("Unreachable: next should be Some"), ',') {
+                    break;
+                }
+                match input.next() {
+                    Some(TokenTree::Ident(i)) => {
+                        langs.push(i);
+                    }
+                    _ => panic!("Expected a language identifier"),
+                }
+            }
+        }
+        None => {},
+        _ => panic!("Expected a language identifier"),
     }
 
     // emit file to include
@@ -265,6 +303,9 @@ pub fn init_i18n(input: TokenStream) -> TokenStream {
     create_dir_all(out_dir).expect("Couldn't create output dir");
     let mut out = File::create(out).expect("Metadata file couldn't be open");
     writeln!(out, "{}", domain).expect("Couldn't write domain");
+    writeln!(out, "{}", po.map(|x| x.to_string()).unwrap_or_else(|| "true".into())).expect("Couldn't write po settings");
+    writeln!(out, "{}", mo.map(|x| x.to_string()).unwrap_or_else(|| "true".into())).expect("Couldn't write mo settings");
+    writeln!(out, "{}", location.map(|x| x.to_string()).unwrap_or_else(|| "true".into())).expect("Couldn't write location settings");
     for l in langs {
         writeln!(out, "{}", l).expect("Couldn't write lang");
     }
@@ -326,6 +367,17 @@ pub fn compile_i18n(_: TokenStream) -> TokenStream {
     let domain = lines.next()
         .expect("Invalid config file. Make sure to call init_i18n! before this macro")
         .expect("IO error while reading config");
+    let make_po: bool = lines.next()
+        .expect("Invalid config file. Make sure to call init_i18n! before this macro")
+        .expect("IO error while reading config")
+        .parse().expect("Couldn't parse bool");
+    let make_mo: bool = lines.next()
+        .expect("Invalid config file. Make sure to call init_i18n! before this macro")
+        .expect("IO error while reading config")
+        .parse().expect("Couldn't parse bool");
+    lines.next()
+        .expect("Invalid config file. Make sure to call init_i18n! before this macro")
+        .expect("IO error while reading config");
     let locales = lines.map(|l| l.expect("IO error while reading locales from config")).collect::<Vec<_>>();
 
     let pot_path = root_crate_path().join("po")
@@ -334,57 +386,65 @@ pub fn compile_i18n(_: TokenStream) -> TokenStream {
 
     for lang in locales {
         let po_path = root_crate_path().join("po").join(domain.clone()).join(format!("{}.po", lang.clone()));
-        if po_path.exists() && po_path.is_file() {
-            // Update it
-            Command::new("msgmerge")
-                .arg("-U")
-                .arg(po_path.to_str().expect("msgmerge: PO path error"))
-                .arg(pot_path.to_str().expect("msgmerge: POT path error"))
-                .stdout(Stdio::null())
-                .status()
-                .map(|s| {
-                    if !s.success() {
-                        panic!("Couldn't update PO file")
-                    }
-                })
-                .expect("Couldn't update PO file. Make sure msgmerge is installed.");
-        } else {
-            println!("Creating {}", lang.clone());
-            // Create it from the template
-            Command::new("msginit")
-                .arg(format!("--input={}", pot_path.to_str().expect("msginit: POT path error")))
-                .arg(format!("--output-file={}", po_path.to_str().expect("msginit: PO path error")))
-                .arg("-l")
-                .arg(lang.clone())
-                .arg("--no-translator")
-                .stdout(Stdio::null())
-                .status()
-                .map(|s| {
-                    if !s.success() {
-                        panic!("Couldn't init PO file (gettext returned an error)")
-                    }
-                })
-                .expect("Couldn't init PO file. Make sure msginit is installed.");
+        if make_po {
+            if po_path.exists() && po_path.is_file() {
+                // Update it
+                Command::new("msgmerge")
+                    .arg("-U")
+                    .arg(po_path.to_str().expect("msgmerge: PO path error"))
+                    .arg(pot_path.to_str().expect("msgmerge: POT path error"))
+                    .stdout(Stdio::null())
+                    .status()
+                    .map(|s| {
+                        if !s.success() {
+                            panic!("Couldn't update PO file")
+                        }
+                    })
+                    .expect("Couldn't update PO file. Make sure msgmerge is installed.");
+            } else {
+                println!("Creating {}", lang.clone());
+                // Create it from the template
+                Command::new("msginit")
+                    .arg(format!("--input={}", pot_path.to_str().expect("msginit: POT path error")))
+                    .arg(format!("--output-file={}", po_path.to_str().expect("msginit: PO path error")))
+                    .arg("-l")
+                    .arg(lang.clone())
+                    .arg("--no-translator")
+                    .stdout(Stdio::null())
+                    .status()
+                    .map(|s| {
+                        if !s.success() {
+                            panic!("Couldn't init PO file (gettext returned an error)")
+                        }
+                    })
+                    .expect("Couldn't init PO file. Make sure msginit is installed.");
+            }
         }
 
-        // Generate .mo
-        let mo_dir = root_crate_path().join("translations")
-            .join(lang.clone())
-            .join("LC_MESSAGES");
-        create_dir_all(mo_dir.clone()).expect("Couldn't create MO directory");
-        let mo_path = mo_dir.join(format!("{}.mo", domain));
+        if make_mo {
+            if !po_path.exists() {
+                panic!("{} doesn't exist. Make sure you didn't disabled po generation.", po_path.display());
+            }
 
-        Command::new("msgfmt")
-            .arg(format!("--output-file={}", mo_path.to_str().expect("msgfmt: MO path error")))
-            .arg(po_path)
-            .stdout(Stdio::null())
-            .status()
-            .map(|s| {
-                if !s.success() {
-                    panic!("Couldn't compile translations (gettext returned an error)")
-                }
-            })
-            .expect("Couldn't compile translations. Make sure msgfmt is installed");
+            // Generate .mo
+            let mo_dir = root_crate_path().join("translations")
+                .join(lang.clone())
+                .join("LC_MESSAGES");
+            create_dir_all(mo_dir.clone()).expect("Couldn't create MO directory");
+            let mo_path = mo_dir.join(format!("{}.mo", domain));
+
+            Command::new("msgfmt")
+                .arg(format!("--output-file={}", mo_path.to_str().expect("msgfmt: MO path error")))
+                .arg(po_path)
+                .stdout(Stdio::null())
+                .status()
+                .map(|s| {
+                    if !s.success() {
+                        panic!("Couldn't compile translations (gettext returned an error)")
+                    }
+                })
+                .expect("Couldn't compile translations. Make sure msgfmt is installed");
+        }
     }
     quote!()
 }
@@ -392,11 +452,12 @@ pub fn compile_i18n(_: TokenStream) -> TokenStream {
 /// Use this macro to staticaly import translations into your final binary.
 ///
 /// ```rust,ignore
-/// # //ignore because there is no translation file provided with rocket_i18n
-/// # #[macro_use]
-/// # extern crate rocket_i18n;
-/// # use rocket_i18n::Translations;
-/// let tr: Translations = include_i18n!();
+/// # //ignore because there is no translation file provided with this crate
+/// # use gettext_macros::include_i18n;
+/// let catalogs = include_i18n!();
+/// catalog.into_iter()
+///     .find(|(lang, _)| lang == "eo")
+///     .map(|(_, catalog| println!("{}", i18n!(catalog, "Hello world!")));
 /// ```
 #[proc_macro]
 pub fn include_i18n(_: TokenStream) -> TokenStream {
@@ -408,11 +469,25 @@ pub fn include_i18n(_: TokenStream) -> TokenStream {
     let domain = lines.next()
         .expect("Invalid config file. Make sure to call init_i18n! before this macro")
         .expect("IO error while reading config");
+    lines.next()
+        .expect("Invalid config file. Make sure to call init_i18n! before this macro")
+        .expect("IO error while reading config");
+    lines.next()
+        .expect("Invalid config file. Make sure to call init_i18n! before this macro")
+        .expect("IO error while reading config");
+    lines.next()
+        .expect("Invalid config file. Make sure to call init_i18n! before this macro")
+        .expect("IO error while reading config");
     let locales = lines
 		.map(|l| l.expect("IO error while reading locales from config"))
 		.map(|l| {
             let lang = TokenTree::Literal(Literal::string(&l));
             let path = root_crate_path().join("translations").join(l).join("LC_MESSAGES").join(format!("{}.mo", domain));
+
+            if !path.exists() {
+                panic!("{} doesn't exist. Make sure to call compile_i18n! before include_i18n!, and check that you didn't disabled mo compilation.", path.display());
+            }
+
             let path = TokenTree::Literal(Literal::string(path.to_str().expect("Couldn't write MO file path")));
             quote!{
                 ($lang, ::gettext::Catalog::parse(

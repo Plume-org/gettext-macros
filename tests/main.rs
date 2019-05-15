@@ -6,8 +6,7 @@ init_i18n!("test", fr, en, de, ja);
 
 #[test]
 fn main() {
-    let catalogs = include_i18n!();
-    let cat = &catalogs[0].1;
+    let cat = get_i18n();
     let x = i18n!(cat, "Hello");
     let b = i18n!(cat, "Singular", "Plural"; 0);
     i18n!(cat, context = "Test context", "Hello");
@@ -19,3 +18,7 @@ fn main() {
 }
 
 compile_i18n!();
+
+fn get_i18n() -> gettext::Catalog {
+    include_i18n!()[0].1.clone()
+}
