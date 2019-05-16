@@ -1,4 +1,6 @@
-#![feature(proc_macro_hygiene, proc_macro_quote, proc_macro_span, uniform_paths)]
+#![feature(proc_macro_hygiene, proc_macro_quote, proc_macro_span, uniform_paths, external_doc)]
+
+#![doc(include = "../README.md")]
 
 extern crate proc_macro;
 use proc_macro::{
@@ -73,6 +75,22 @@ fn named_arg(mut input: TokenIter, name: &'static str) -> Option<TokenStream> {
         }
         _ => None,
     })
+}
+
+fn root_crate_path() -> std::path::PathBuf {
+    let path = env::var("CARGO_MANIFEST_DIR")
+        .expect("CARGO_MANIFEST_DIR is not set. Please use cargo to compile your crate.");
+    let path = Path::new(&path);
+    if path
+        .parent()
+        .expect("No parent dir")
+        .join("Cargo.toml")
+        .exists()
+    {
+        path.parent().expect("No parent dir").to_path_buf()
+    } else {
+        path.to_path_buf()
+    }
 }
 
 struct Config {
@@ -298,6 +316,45 @@ msgstr ""
     }
 }
 
+/// Marks a string as translatable
+///
+/// It only adds the given string to the `.pot` file, without translating it at runtime.
+///
+/// To translate it for real, you will have to use `i18n`. The advantage of this macro, is
+/// that you mark a string as translatable without requiring a catalog to be available in scope.
+///
+/// # Return value
+///
+/// In case of a singular message, the message itself is returned.
+///
+/// For messages with a plural form, it is a tuple containing the singular form, and the plural one.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// #use gettext_macros::*;
+/// // Let's say we can't have access to a Catalog at this point of the program
+/// let msg = t!("Hello, world!");
+/// let plural = t!("Singular", "Plural")
+///
+/// // Now, let's get a catalog, and translate these messages
+/// let cat = get_catalog();
+/// i18n!(cat, msg);
+/// i18n!(cat, plural.0, plural.1; 57);
+/// ```
+///
+/// # Syntax
+///
+/// This macro accepts the following syntaxes:
+///
+/// ```rust,ignore
+/// t!($singular)
+/// t!($singular, $plural)
+/// t!(context = $ctx, $singular)
+/// t!(context = $ctx, $singular, $plural)
+/// ```
+///
+/// Where `$singular`, `$plural` and `$ctx` all are `str` literals (and not variables, expressions or literal of any other type).
 #[proc_macro]
 pub fn t(input: TokenStream) -> TokenStream {
     let span = input
@@ -323,6 +380,84 @@ pub fn t(input: TokenStream) -> TokenStream {
     }
 }
 
+/// Marks a string as translatable and translate it at runtime.
+///
+/// It add the string to the `.pot` file and translate them at runtime, using a given `gettext::Catalog`.
+///
+/// # Return value
+///
+/// This macro returns the translated string.
+///
+/// # Panics
+///
+/// This macro will panic if it the format string (of the translation) does not match the
+/// format arguments that were given. For instance, if you have a string `Hello!`, that
+/// is translated in Esperanto as `Saluton {name}!`, and that you call this function without
+/// any format argument (as expected in the original English string), it will panic.
+///
+/// # Examples
+///
+/// Basic usage:
+///
+/// ```rust,ignore
+/// // cat is the gettext::Catalog containing translations for the current locale.
+/// let cat = get_catalog();
+/// i18n!(cat, "Hello, world!");
+/// ```
+///
+/// Formatting a translated string:
+///
+/// ```rust,ignore
+/// let name = "Peter";
+/// i18n!(cat, "Hi {0}!"; name);
+///
+/// // Also works with multiple format arguments
+/// i18n!(cat, "You are our {}th visitor! You won ${}!"; 99_999, 2);
+/// ```
+///
+/// With a context, that will be shown to translators:
+///
+/// ```rust,ignore
+/// let name = "Sophia";
+/// i18n!(cat, context = "The variable is the name of the person being greeted", "Hello, {0}!"; name);
+/// ```
+///
+/// Translating string that changes depending on a number:
+///
+/// ```rust,ignore
+/// let flowers_count = 18;
+/// i18n!(cat, "What a nice flower!", "What a nice garden!"; flowers_count);
+/// ```
+///
+/// With all available options:
+///
+/// ```rust,ignore
+/// let updates = 69;
+/// i18n!(
+///     cat,
+///     context = "The notification when updates are available.",
+///     "There is {} app update available."
+///     "There are {} app updates available.";
+///     updates
+/// );
+/// ```
+///
+/// # Syntax
+///
+/// This macro expects:
+///
+/// - first, the expression to get the translation catalog to use
+/// - then, optionally, the `context` named argument, that is a string that will be shown
+///   to translators. It should be a `str` literal, because it needs to be known at compile time.
+/// - the message to translate. It can either be a string literal, or an expression, but if you use the later
+///   make sure that the string is correctly added to the `.pot` file with `t`.
+/// - if this message has a plural version, it should come after. Here too, both string literals or other expressions
+///   are allowed
+///
+/// All these arguments should be separated by commas.
+///
+/// If you want to pass format arguments to this macro, to have them inserted into the translated strings,
+/// you should add them at the end, after a colon, and seperate them with commas too.
 #[proc_macro]
 pub fn i18n(input: TokenStream) -> TokenStream {
     let span = input
@@ -389,6 +524,42 @@ pub fn i18n(input: TokenStream) -> TokenStream {
     res
 }
 
+/// This macro configures internationalization for the current crate
+///
+/// This macro expands to nothing, it just write your configuration to files
+/// for other macros calls, and creates the `.pot` file if needed.
+///
+/// This macro should be called before (not in the program flow, but in the Rust parser flow) all other
+/// internationalization macros.
+///
+/// # Examples
+///
+/// Basic usage:
+///
+/// ```rust,ignore
+/// init_i18n!("my_app", de, en, eo, fr, ja, pl, ru);
+/// ```
+/// With `.po` and `.mo` generation turned off, and without comments about string location in the `.pot`:
+///
+/// ```rust,ignore
+/// init_i18n!("my_app", po = false, mo = false, location = false, de, en, eo, fr, ja, pl, ru);
+/// ```
+///
+/// # Syntax
+///
+/// This macro expects:
+///
+/// - a string literal, that is the translation domain of your crate.
+/// - optionally, the `po` named argument, that is a boolean literal to turn off `.po` generation from `.pot` in `compile_i18n`
+/// - optionally, the `mo` named argument, that is a boolean literal too, to turn of `.po` compilation into `.mo` files in `compile_i18n`.
+///   Note that if you turn this feature off, `include_i18n` won't work unless you manually generate the `.mo` files in
+///   `target/TARGET/gettext_macros/LOCALE/DOMAIN.mo`.
+/// - optionally, the `location` named argument, a boolean too, to avoid writing the location of the string in the source code to translation files.
+///   Having this location available can be usefull if your translators know a bit of Rust and needs context about what they are translating, but it
+///   also makes bigger diffs, because your `.pot` and `.po` files may be regenerated if a line number changes.
+/// - then, the list of languages you want your app to be translated in, separated by commas. The languages are not string literals, but identifiers.
+///
+/// All the three boolean options are turned on by default. Also note that you may ommit one (or more) of them, but they should always be in this order.
 #[proc_macro]
 pub fn init_i18n(input: TokenStream) -> TokenStream {
     let mut input = input.into_iter();
@@ -492,20 +663,38 @@ msgstr ""
     quote!()
 }
 
+/// Gives you the translation domain for the current crate.
+///
+/// # Return value
+///
+/// A `'static str` containing the GetText domain of this crate.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// println!("The GetText domain is: {}", i18n_domain!());
+/// ```
 #[proc_macro]
 pub fn i18n_domain(_: TokenStream) -> TokenStream {
-    let out_dir = Path::new(&env::var("CARGO_TARGET_DIR").unwrap_or("target/debug".into()))
-        .join("gettext_macros");
-    let domain = read(out_dir.join(env::var("CARGO_PKG_NAME").expect("Please build with cargo")))
-        .expect("Coudln't read domain, make sure to call init_i18n! before")
-        .lines()
-        .next()
-        .expect("Invalid config file. Make sure to call init_i18n! before this macro")
-        .expect("IO error while reading config");
+    let domain = Config::read().domain;
     let tok = TokenTree::Literal(Literal::string(&domain));
     quote!($tok)
 }
 
+/// Compiles your internationalization files.
+///
+/// This macro expands to nothing, it just writes `.po` and `.mo` files.
+///
+/// You can configure its behavior with the `po` and `mo` options of `init_i18n`.
+///
+/// This macro should be called after (not in the program flow, but in the Rust parser flow) all other internationlaziton macros,
+/// expected `include_i18n`.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// compile_i18n!();
+/// ```
 #[proc_macro]
 pub fn compile_i18n(_: TokenStream) -> TokenStream {
     let conf = Config::read();
@@ -605,9 +794,12 @@ pub fn compile_i18n(_: TokenStream) -> TokenStream {
 
 /// Use this macro to staticaly import translations into your final binary.
 ///
+/// This macro won't work if ou set `mo = false` in `init_i18n`, unless you manually generate the `.mo` files in
+/// `target/TARGET/gettext_macros/LOCALE/DOMAIN.mo`.
+///
+/// # Example
+///
 /// ```rust,ignore
-/// # //ignore because there is no translation file provided with this crate
-/// # use gettext_macros::include_i18n;
 /// let catalogs = include_i18n!();
 /// catalog.into_iter()
 ///     .find(|(lang, _)| lang == "eo")
@@ -639,20 +831,4 @@ pub fn include_i18n(_: TokenStream) -> TokenStream {
             $locales
         ]
     })
-}
-
-fn root_crate_path() -> std::path::PathBuf {
-    let path = env::var("CARGO_MANIFEST_DIR")
-        .expect("CARGO_MANIFEST_DIR is not set. Please use cargo to compile your crate.");
-    let path = Path::new(&path);
-    if path
-        .parent()
-        .expect("No parent dir")
-        .join("Cargo.toml")
-        .exists()
-    {
-        path.parent().expect("No parent dir").to_path_buf()
-    } else {
-        path.to_path_buf()
-    }
 }

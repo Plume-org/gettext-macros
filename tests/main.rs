@@ -16,6 +16,7 @@ fn main() {
     i18n!(cat, msgid2.0, msgid2.1; 42);
     let x = i18n!(cat, "Hello");
     let b = i18n!(cat, "Singular", "Plural"; 0);
+    i18n!(cat, "Singular", "Plural {}"; 0);
     i18n!(cat, context = "Test context", "Hello");
     i18n!(cat, context = "Test context (plural)", "Hello", "Plural"; 2);
     i18n!(cat, context = "Test context (format)", "Hello {}"; "world");
