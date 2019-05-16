@@ -1,4 +1,4 @@
-# Gettext macros
+# Gettext macros [![Crates.io](https://img.shields.io/crates/v/gettext-macros.svg)](https://crates.io/crates/gettext-macros) [![Docs.rs](https://docs.rs/mio/badge.svg)](https://docs.rs/gettext-rs)
 
 A few proc-macros to help you internationalize your Rust apps.
 

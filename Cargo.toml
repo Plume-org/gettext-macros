@@ -1,6 +1,6 @@
 [package]
 name = "gettext-macros"
-version = "0.4.0"
+version = "0.5.0"
 authors = ["Ana Gelez <ana@gelez.xyz>"]
 description = "A few proc-macros to help internationalizing Rust applications"
 repository = "https://github.com/Plume-org/gettext-macros"
