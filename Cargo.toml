@@ -11,5 +11,5 @@ edition = "2018"
 proc-macro = true
 
 [dependencies]
-gettext = "0.3"
+gettext = "0.4"
 runtime-fmt = "0.3"
