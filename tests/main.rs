@@ -1,4 +1,4 @@
-#![feature(proc_macro_hygiene, decl_macro, uniform_paths)]
+#![feature(proc_macro_hygiene, decl_macro)]
 
 use gettext_macros::*;
 
@@ -23,6 +23,9 @@ fn main() {
     println!("{} {}", x, b);
     println!("{}", i18n!(cat, "Woohoo, it {}"; "works"));
     println!(i18n_domain!());
+
+    let v = vec![1, 2, 3];
+    i18n!(cat, "Test complex formatting {}, {}", "aaahh"; v[0], v[2]);
 }
 
 compile_i18n!();

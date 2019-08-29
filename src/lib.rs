@@ -1,4 +1,4 @@
-#![feature(proc_macro_hygiene, proc_macro_quote, proc_macro_span, uniform_paths, external_doc)]
+#![feature(proc_macro_hygiene, proc_macro_quote, proc_macro_span, external_doc)]
 
 #![doc(include = "../README.md")]
 
@@ -488,13 +488,15 @@ pub fn i18n(input: TokenStream) -> TokenStream {
     let mut gettext_call = TokenStream::from_iter(catalog);
     let content = message.content;
     if let Some(pl) = message.plural {
-        let count = message
+        let count: TokenStream = message
             .format_args
             .clone()
             .into_iter()
-            .next()
-            .expect("Item count should be specified")
-            .clone();
+            .take_while(|x| match x {
+                TokenTree::Punct(p) if p.as_char() == ',' => false,
+                _ => true
+            })
+            .collect();
         if let Some(c) = message.context {
             gettext_call.extend(quote!(
                 .npgettext($c, $content, $pl, $count as u64)
@@ -521,6 +523,7 @@ pub fn i18n(input: TokenStream) -> TokenStream {
         use runtime_fmt::*;
         rt_format!($gettext_call, $fargs).expect("Error while formatting message")
     });
+    // println!("{:#?}", res);
     res
 }
 
