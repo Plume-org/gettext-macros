@@ -30,7 +30,7 @@ generate a .pot file for these domains.
 use gettext_macros::*;
 
 // The translations for this crate are stored in the "my_app" domain.
-// Translations for all the listed langages will be available.
+// Translations for all the listed languages will be available.
 init_i18n!("my_app", ar, de, en, fr, it, ja, ru);
 
 // Generate or update .po from .pot, and compile them to .mo
