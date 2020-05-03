@@ -1,4 +1,4 @@
-# Gettext macros [![Crates.io](https://img.shields.io/crates/v/gettext-macros.svg)](https://crates.io/crates/gettext-macros) [![Docs.rs](https://docs.rs/mio/badge.svg)](https://docs.rs/gettext-rs)
+# Gettext macros [![Crates.io](https://img.shields.io/crates/v/gettext-macros.svg)](https://crates.io/crates/gettext-macros) [![Docs.rs](https://docs.rs/gettext-macros/badge.svg)](https://docs.rs/gettext-macros)
 
 A few proc-macros to help you internationalize your Rust apps.
 
@@ -33,11 +33,8 @@ use gettext_macros::*;
 // Translations for all the listed languages will be available.
 init_i18n!("my_app", ar, de, en, fr, it, ja, ru);
 
-// Generate or update .po from .pot, and compile them to .mo
-compile_i18n!();
-
 fn main() {
-	let catalog = cat();
+    let catalog = cat();
 
     println!("{}", i18n!(catalog, "Hello, world!"));
     let name = "Jane";
@@ -47,10 +44,13 @@ fn main() {
 }
 
 fn cat() -> gettext::Catalog {
-	// include_i18n! embeds translations in your binary.
+    // include_i18n! embeds translations in your binary.
     // It gives a Vec<(&'static str, Catalog)> (list of catalogs with their associated language).
     let catalog = include_i18n!()[0]
 }
+
+// Generate or update .po from .pot, and compile them to .mo
+compile_i18n!();
 ```
 
 ## Order of the macros
@@ -60,8 +60,8 @@ doesn't depend on the program flow, but of the Rust parser flow. Rust will execu
 macros in the same order they are written in your code. For instance:
 
 ```rust,ignore
-i_am_expanded_first();
-then_i_am_expanded()
+i_am_expanded_first!();
+then_i_am_expanded!()
 ```
 
 Or, for projects with modules:
