@@ -1,19 +1,19 @@
-#![feature(proc_macro_hygiene, proc_macro_quote, proc_macro_span, external_doc)]
-
-#![doc(include = "../README.md")]
+//! A set of macros to make i18n easier.
 
 extern crate proc_macro;
-use proc_macro::{
-    quote, token_stream::IntoIter as TokenIter, Delimiter, Literal, TokenStream, TokenTree,
+use proc_macro::TokenStream;
+use proc_macro2::{
+    token_stream::IntoIter as TokenIter, Literal, TokenTree, 
 };
+use quote::quote;
 use std::{
     env,
     fs::{create_dir_all, read, File, OpenOptions},
     io::{BufRead, Read, Seek, SeekFrom, Write},
-    iter::FromIterator,
     path::Path,
     process::{Command, Stdio},
 };
+use syn::Token;
 
 fn is(t: &TokenTree, ch: char) -> bool {
     match t {
@@ -22,45 +22,7 @@ fn is(t: &TokenTree, ch: char) -> bool {
     }
 }
 
-fn is_empty(t: &TokenTree) -> bool {
-    match t {
-        TokenTree::Literal(lit) => format!("{}", lit).len() == 2,
-        TokenTree::Group(grp) => {
-            if grp.delimiter() == Delimiter::None {
-                grp.stream()
-                    .into_iter()
-                    .next()
-                    .map(|t| is_empty(&t))
-                    .unwrap_or(false)
-            } else {
-                false
-            }
-        }
-        _ => false,
-    }
-}
-
-fn is_empty_ts(t: &TokenStream) -> bool {
-    t.clone().into_iter().fold(true, |r, t| r && is_empty(&t))
-}
-
-fn trim(t: TokenTree) -> TokenTree {
-    match t {
-        TokenTree::Group(grp) => {
-            if grp.delimiter() == Delimiter::None {
-                grp.stream()
-                    .into_iter()
-                    .next()
-                    .expect("Unexpected empty expression")
-            } else {
-                TokenTree::Group(grp)
-            }
-        }
-        x => x,
-    }
-}
-
-fn named_arg(mut input: TokenIter, name: &'static str) -> Option<TokenStream> {
+fn named_arg(mut input: TokenIter, name: &'static str) -> Option<proc_macro2::TokenStream> {
     input.next().and_then(|t| match t {
         TokenTree::Ident(ref i) if i.to_string() == name => {
             input.next(); // skip "="
@@ -97,7 +59,6 @@ struct Config {
     domain: String,
     make_po: bool,
     make_mo: bool,
-    write_loc: bool,
     langs: Vec<String>,
 }
 
@@ -135,17 +96,10 @@ impl Config {
             .expect("IO error while reading config")
             .parse()
             .expect("Couldn't parse make_mo");
-        let write_loc: bool = lines
-            .next()
-            .expect("Invalid config file. Make sure to call init_i18n! before this macro")
-            .expect("IO error while reading config")
-            .parse()
-            .expect("Couldn't parse write_loc");
         Config {
             domain,
             make_po,
             make_mo,
-            write_loc,
             langs: lines
                 .map(|l| l.expect("IO error while reading config"))
                 .collect(),
@@ -159,88 +113,20 @@ impl Config {
         writeln!(out, "{}", self.domain).expect("Couldn't write domain");
         writeln!(out, "{}", self.make_po).expect("Couldn't write po settings");
         writeln!(out, "{}", self.make_mo).expect("Couldn't write mo settings");
-        writeln!(out, "{}", self.write_loc).expect("Couldn't write location settings");
         for l in self.langs.clone() {
             writeln!(out, "{}", l).expect("Couldn't write lang");
         }
     }
 }
 
-struct Message {
-    content: TokenStream,
-    plural: Option<TokenStream>,
-    context: Option<TokenTree>,
-    format_args: TokenStream,
-    writable: bool,
-}
+trait Message {
+    fn writable(&self) -> bool;
+    fn content(&self) -> String;
+    fn context(&self) -> Option<String>;
+    fn plural(&self) -> Option<String>;
 
-impl Message {
-    fn parse(mut input: TokenIter, str_only: bool) -> Message {
-        let context = named_arg(input.clone(), "context");
-        if let Some(c) = context.clone() {
-            for _ in 0..(c.into_iter().count() + 3) {
-                input.next();
-            }
-        }
-        let content = if str_only {
-            TokenStream::from_iter(vec![trim(
-                input.next().expect("Expected a message to translate"),
-            )])
-        } else {
-            let res: TokenStream = input
-                .clone()
-                .take_while(|t| !is(&t, ',') && !is(&t, ';'))
-                .collect();
-
-            for _ in 0..(res.clone().into_iter().count()) {
-                input.next();
-            }
-
-            res
-        };
-
-        let plural: Option<TokenStream> = match input.clone().next() {
-            Some(t) => {
-                if is(&t, ',') {
-                    input.next();
-                    Some(input.clone().take_while(|t| !is(t, ';')).collect())
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        };
-        if let Some(p) = plural.clone() {
-            for _ in 0..(p.into_iter().count() + 1) {
-                input.next();
-            }
-        }
-
-        if let Some(t) = input.clone().next() {
-            if is(&t, ';') {
-                input.next();
-            }
-        }
-
-        Message {
-            context: context.and_then(|c| c.into_iter().next()),
-            plural,
-            format_args: input.collect(),
-            writable: content
-                .clone()
-                .into_iter()
-                .next()
-                .map(|t| match trim(t) {
-                    TokenTree::Literal(_) => true,
-                    _ => false,
-                })
-                .unwrap_or(false),
-            content,
-        }
-    }
-
-    fn write(&self, location: Option<(std::path::PathBuf, usize)>) {
-        if !self.writable {
+    fn write(&self) {
+        if !self.writable() {
             return;
         }
 
@@ -259,43 +145,39 @@ impl Message {
         pot.seek(SeekFrom::End(0))
             .expect("IO error while seeking .pot file to end");
 
-        let already_exists = is_empty_ts(&self.content)
+        let already_exists = self.content().is_empty()
             || contents.contains(&format!(
-                "{}msgid {}",
-                self.context
+                r#"{}msgid "{}""#,
+                self.context()
                     .clone()
-                    .map(|c| format!("msgctxt {}\n", c))
+                    .map(|c| format!(
+r#"msgctxt "{}"
+"#,
+                    c))
                     .unwrap_or_default(),
-                self.content
+                self.content()
             ));
         if already_exists {
             return;
         }
 
-        let code_path = match location
-            .clone()
-            .and_then(|(f, l)| f.clone().to_str().map(|s| (s.to_string(), l)))
-        {
-            Some((ref path, line)) if !location.unwrap().0.is_absolute() => {
-                format!("#: {}:{}\n", path, line)
-            }
-            _ => String::new(),
-        };
-        let prefix = if let Some(c) = self.context.clone() {
-            format!("{}msgctxt {}\n", code_path, c)
+        let prefix = if let Some(c) = self.context() {
+            format!(
+r#"msgctxt "{}"
+"#, c)
         } else {
-            code_path
+            String::new()
         };
 
-        if let Some(ref pl) = self.plural {
+        if let Some(ref pl) = self.plural() {
             pot.write_all(
                 &format!(
                     r#"
-{}msgid {}
-msgid_plural {}
+{}msgid "{}"
+msgid_plural "{}"
 msgstr[0] ""
 "#,
-                    prefix, self.content, pl,
+                    prefix, self.content(), pl,
                 )
                 .into_bytes(),
             )
@@ -304,15 +186,136 @@ msgstr[0] ""
             pot.write_all(
                 &format!(
                     r#"
-{}msgid {}
+{}msgid "{}"
 msgstr ""
 "#,
-                    prefix, self.content,
+                    prefix, self.content(),
                 )
                 .into_bytes(),
             )
             .expect("Couldn't write message to .pot");
         }
+    }
+}
+
+struct I18nCall {
+    catalog: syn::Expr,
+    context: Option<syn::LitStr>,
+    msg: syn::Expr,
+    plural: Option<syn::Expr>,
+    format_args: Option<syn::punctuated::Punctuated<syn::Expr, syn::Token![,]>>,
+}
+
+mod kw {
+    syn::custom_keyword!(context);
+}
+
+impl syn::parse::Parse for I18nCall {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let catalog = input.parse()?;
+        input.parse::<Token![,]>()?;
+        let context = if input.parse::<kw::context>().is_ok() {
+            input.parse::<Token![=]>()?;
+            let ctx = input.parse().ok();
+            input.parse::<Token![,]>()?;
+            ctx
+        } else {
+            None
+        };
+        let msg = input.parse()?;
+        let plural = if input.parse::<Token![,]>().is_ok() {
+            input.parse().ok()
+        } else {
+            None
+        };
+        let format_args = if input.parse::<Token![;]>().is_ok() {
+            syn::punctuated::Punctuated::parse_terminated(input).ok()
+        } else {
+            None
+        };
+
+        Ok(I18nCall {
+            catalog,
+            context,
+            msg,
+            plural,
+            format_args,
+        })
+    }
+}
+
+fn extract_str_lit(expr: &syn::Expr) -> Option<String> {
+    match *expr {
+        syn::Expr::Lit(syn::ExprLit { lit : syn::Lit::Str(ref s), attrs: _ }) => Some(s.value()),
+        _ => None,
+    }
+}
+
+impl Message for I18nCall {
+    fn writable(&self) -> bool {
+        extract_str_lit(&self.msg).is_some()
+    }
+
+    fn content(&self) -> String {
+        extract_str_lit(&self.msg).unwrap_or_default()
+    }
+
+    fn context(&self) -> Option<String> {
+        self.context.as_ref().map(|c| c.value())
+    }
+
+    fn plural(&self) -> Option<String> {
+        self.plural.as_ref().and_then(extract_str_lit)
+    }
+}
+
+struct TCall {
+    context: Option<syn::LitStr>,
+    msg: syn::LitStr,
+    plural: Option<syn::LitStr>,
+}
+
+impl syn::parse::Parse for TCall {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let context = if input.parse::<kw::context>().is_ok() {
+            input.parse::<Token![=]>()?;
+            let ctx = input.parse().ok();
+            input.parse::<Token![,]>()?;
+            ctx
+        } else {
+            None
+        };
+
+        let msg = input.parse()?;
+        let plural = if input.parse::<Token![,]>().is_ok() {
+            input.parse().ok()
+        } else {
+            None
+        };
+
+        Ok(TCall {
+            context,
+            msg,
+            plural,
+        })
+    }
+}
+
+impl Message for TCall {
+    fn writable(&self) -> bool {
+        true
+    }
+
+    fn content(&self) -> String {
+        self.msg.value()
+    }
+
+    fn context(&self) -> Option<String> {
+        self.context.as_ref().map(|c| c.value())
+    }
+
+    fn plural(&self) -> Option<String> {
+        self.plural.as_ref().map(|p| p.value())
     }
 }
 
@@ -357,26 +360,15 @@ msgstr ""
 /// Where `$singular`, `$plural` and `$ctx` all are `str` literals (and not variables, expressions or literal of any other type).
 #[proc_macro]
 pub fn t(input: TokenStream) -> TokenStream {
-    let span = input
-        .clone()
-        .into_iter()
-        .next()
-        .expect("Expected catalog")
-        .span();
-    let message = Message::parse(input.into_iter(), true);
-    message.write(
-        span.source_file()
-            .path()
-            .to_str()
-            .map(|p| (p.into(), span.start().line)),
-    );
-    let msg = message.content.clone();
+    let message = syn::parse_macro_input!(input as TCall);
+    message.write();
+    let msg = message.content();
     if let Some(pl) = message.plural.clone() {
         quote!(
-            ($msg, $pl)
-        )
+            (#msg, #pl)
+        ).into()
     } else {
-        quote!($msg)
+        quote!(#msg).into()
     }
 }
 
@@ -460,71 +452,45 @@ pub fn t(input: TokenStream) -> TokenStream {
 /// you should add them at the end, after a colon, and seperate them with commas too.
 #[proc_macro]
 pub fn i18n(input: TokenStream) -> TokenStream {
-    let span = input
-        .clone()
-        .into_iter()
-        .next()
-        .expect("Expected catalog")
-        .span();
-    let mut input = input.into_iter();
-    let catalog = input
-        .clone()
-        .take_while(|t| !is(t, ','))
-        .collect::<Vec<_>>();
-    for _ in 0..(catalog.len() + 1) {
-        input.next();
-    }
+    let message = syn::parse_macro_input!(input as I18nCall);
+    message.write();
 
-    let message = Message::parse(input, false);
-    message.write(if Config::read().write_loc {
-        span.source_file()
-            .path()
-            .to_str()
-            .map(|p| (p.into(), span.start().line))
-    } else {
-        None
-    });
-
-    let mut gettext_call = TokenStream::from_iter(catalog);
-    let content = message.content;
-    if let Some(pl) = message.plural {
-        let count: TokenStream = message
+    let gettext_call = message.catalog.clone();
+    let content = message.msg;
+    let gettext_call = if let Some(pl) = message.plural {
+        let count = message
             .format_args
             .clone()
-            .into_iter()
-            .take_while(|x| match x {
-                TokenTree::Punct(p) if p.as_char() == ',' => false,
-                _ => true
-            })
-            .collect();
+            .and_then(|args| args.first().cloned());
         if let Some(c) = message.context {
-            gettext_call.extend(quote!(
-                .npgettext($c, $content, $pl, $count as u64)
-            ))
+            quote!(
+                #gettext_call.npgettext(#c, #content, #pl, #count as u64)
+            )
         } else {
-            gettext_call.extend(quote!(
-                .ngettext($content, $pl, $count as u64)
-            ))
+            quote!(
+                #gettext_call.ngettext(#content, #pl, #count as u64)
+            )
         }
     } else {
         if let Some(c) = message.context {
-            gettext_call.extend(quote!(
-                .pgettext($c, $content)
-            ))
+            quote!(
+                #gettext_call.pgettext(#c, #content)
+            )
         } else {
-            gettext_call.extend(quote!(
-                .gettext($content)
-            ))
+            quote!(
+                #gettext_call.gettext(#content)
+            )
         }
-    }
+    };
 
-    let fargs = message.format_args;
+    let fargs: syn::punctuated::Punctuated<proc_macro2::TokenStream, Token![,]> = message.format_args.unwrap_or_default().into_iter().map(|x| {
+        quote!(::std::boxed::Box::new(#x))
+    }).collect();
     let res = quote!({
-        use runtime_fmt::*;
-        rt_format!($gettext_call, $fargs).expect("Error while formatting message")
+        use gettext_utils::try_format;
+        try_format(#gettext_call, &[#fargs]).expect("Error while formatting message")
     });
-    // println!("{:#?}", res);
-    res
+    res.into()
 }
 
 /// This macro configures internationalization for the current crate
@@ -545,7 +511,7 @@ pub fn i18n(input: TokenStream) -> TokenStream {
 /// With `.po` and `.mo` generation turned off, and without comments about string location in the `.pot`:
 ///
 /// ```rust,ignore
-/// init_i18n!("my_app", po = false, mo = false, location = false, de, en, eo, fr, ja, pl, ru);
+/// init_i18n!("my_app", po = false, mo = false, de, en, eo, fr, ja, pl, ru);
 /// ```
 ///
 /// # Syntax
@@ -565,6 +531,7 @@ pub fn i18n(input: TokenStream) -> TokenStream {
 /// All the three boolean options are turned on by default. Also note that you may ommit one (or more) of them, but they should always be in this order.
 #[proc_macro]
 pub fn init_i18n(input: TokenStream) -> TokenStream {
+    let input = proc_macro2::TokenStream::from(input);
     let mut input = input.into_iter();
     let domain = match input.next() {
         Some(TokenTree::Literal(lit)) => lit.to_string().replace("\"", ""),
@@ -572,7 +539,7 @@ pub fn init_i18n(input: TokenStream) -> TokenStream {
         None => panic!("Expected a translation domain (for instance \"myapp\")"),
     };
 
-    let (po, mo, location) = if let Some(n) = input.next() {
+    let (po, mo) = if let Some(n) = input.next() {
         if is(&n, ',') {
             let po = named_arg(input.clone(), "po");
             if let Some(po) = po.clone() {
@@ -588,19 +555,12 @@ pub fn init_i18n(input: TokenStream) -> TokenStream {
                 }
             }
 
-            let location = named_arg(input.clone(), "location");
-            if let Some(location) = location.clone() {
-                for _ in 0..(location.into_iter().count() + 3) {
-                    input.next();
-                }
-            }
-
-            (po, mo, location)
+            (po, mo)
         } else {
-            (None, None, None)
+            (None, None)
         }
     } else {
-        (None, None, None)
+        (None, None)
     };
 
     let mut langs = vec![];
@@ -628,7 +588,6 @@ pub fn init_i18n(input: TokenStream) -> TokenStream {
         domain: domain.clone(),
         make_po: po.map(|x| x.to_string() == "true").unwrap_or(true),
         make_mo: mo.map(|x| x.to_string() == "true").unwrap_or(true),
-        write_loc: location.map(|x| x.to_string() == "true").unwrap_or(true),
         langs,
     };
     conf.write();
@@ -663,7 +622,7 @@ msgstr ""
     )
     .expect("Couldn't init .pot file");
 
-    quote!()
+    quote!().into()
 }
 
 /// Gives you the translation domain for the current crate.
@@ -681,7 +640,7 @@ msgstr ""
 pub fn i18n_domain(_: TokenStream) -> TokenStream {
     let domain = Config::read().domain;
     let tok = TokenTree::Literal(Literal::string(&domain));
-    quote!($tok)
+    quote!(#tok).into()
 }
 
 /// Compiles your internationalization files.
@@ -792,7 +751,7 @@ pub fn compile_i18n(_: TokenStream) -> TokenStream {
                 .expect("Couldn't compile translations. Make sure msgfmt is installed");
         }
     }
-    quote!()
+    quote!().into()
 }
 
 /// Use this macro to staticaly import translations into your final binary.
@@ -821,17 +780,17 @@ pub fn include_i18n(_: TokenStream) -> TokenStream {
 
         let path = TokenTree::Literal(Literal::string(path.to_str().expect("Couldn't write MO file path")));
         quote!{
-            ($lang, ::gettext::Catalog::parse(
+            (#lang, ::gettext::Catalog::parse(
                 &include_bytes!(
-                    $path
+                    #path
                 )[..]
             ).expect("Error while loading catalog")),
         }
-	}).collect::<TokenStream>();
+	}).collect::<proc_macro2::TokenStream>();
 
     quote!({
         vec![
-            $locales
+            #locales
         ]
-    })
+    }).into()
 }

@@ -1,5 +1,3 @@
-#![feature(proc_macro_hygiene, decl_macro)]
-
 use gettext_macros::*;
 
 init_i18n!("test", fr, en, de, ja);
