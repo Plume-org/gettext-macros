@@ -257,7 +257,7 @@ impl Message for I18nCall {
     }
 
     fn content(&self) -> String {
-        extract_str_lit(&self.msg).unwrap_or_default()
+        extract_str_lit(&self.msg).unwrap_or_default().replace("\"", "\\\"").replace('\n', "\\n")
     }
 
     fn context(&self) -> Option<String> {
@@ -307,7 +307,7 @@ impl Message for TCall {
     }
 
     fn content(&self) -> String {
-        self.msg.value()
+        self.msg.value().replace("\"", "\\\"").replace('\n', "\\n")
     }
 
     fn context(&self) -> Option<String> {
