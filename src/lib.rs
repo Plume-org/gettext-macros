@@ -3,7 +3,7 @@
 extern crate proc_macro;
 use proc_macro::TokenStream;
 use proc_macro2::{
-    token_stream::IntoIter as TokenIter, Literal, TokenTree, 
+    token_stream::IntoIter as TokenIter, Literal, TokenTree,
 };
 use quote::quote;
 use std::{
